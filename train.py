@@ -446,14 +446,11 @@ def train(
     winners = np.full(num_episodes, -1, dtype=np.int8)  # 0=agent, 1=opponent, -1=draw/other
     episode_lengths = np.zeros(num_episodes, dtype=np.int32)
 
-    # Clean evaluation metrics (decoupled from training loop)
-    # Decoupled benchmarks: vs Random and vs Heuristic opponents.
-    eval_win_random: List[float] = []
-    eval_reward_random: List[float] = []
-    eval_win_heuristic: List[float] = []
-    eval_reward_heuristic: List[float] = []
-    eval_win_p1_heuristic: List[float] = []
-    eval_win_p2_heuristic: List[float] = []
+    # Clean evaluation metrics (decoupled benchmarks vs fixed opponents)
+    eval_win_random: List[float] = []  # overall win rate vs random opponent
+    eval_win_heuristic: List[float] = []  # overall win rate vs heuristic opponent
+    eval_win_p1_heuristic: List[float] = []  # win rate as Player 1 vs heuristic
+    eval_win_p2_heuristic: List[float] = []  # win rate as Player 2 vs heuristic
     q_table_sizes: List[int] = []
 
     # Curriculum phase: 0 = mostly random, 1 = mostly heuristic, 2 = mostly self-play
@@ -517,42 +514,47 @@ def train(
             # Episode window start index for logging
             start = max(0, ep - 999)
 
-            # Run decoupled evaluations against fixed opponents (Random and Heuristic).
-            # 1) Benchmark vs Random opponent
-            rnd_win_p1, rnd_win_p2, rnd_avg_reward = evaluate_agent(
+            # Decoupled evaluation vs RANDOM opponent (fixed benchmark)
+            eval_p1_random, eval_p2_random, eval_avg_reward_random = evaluate_agent(
                 env,
                 agent,
                 num_games=100,
                 opponent_type="random",
                 opponent_pool={"historical": [], "recent": []},
             )
-            eval_win_random.append(0.5 * (rnd_win_p1 + rnd_win_p2))
-            eval_reward_random.append(rnd_avg_reward)
+            eval_overall_random = 0.5 * (eval_p1_random + eval_p2_random)
+            eval_win_random.append(eval_overall_random)
 
-            # 2) Benchmark vs Heuristic opponent
-            heu_win_p1, heu_win_p2, heu_avg_reward = evaluate_agent(
+            # Decoupled evaluation vs HEURISTIC opponent (primary curriculum benchmark)
+            eval_p1_heuristic, eval_p2_heuristic, eval_avg_reward_heuristic = evaluate_agent(
                 env,
                 agent,
                 num_games=100,
                 opponent_type="heuristic",
                 opponent_pool={"historical": [], "recent": []},
             )
-            eval_win_heuristic.append(0.5 * (heu_win_p1 + heu_win_p2))
-            eval_reward_heuristic.append(heu_avg_reward)
-            eval_win_p1_heuristic.append(heu_win_p1)
-            eval_win_p2_heuristic.append(heu_win_p2)
+            eval_overall_heuristic = 0.5 * (eval_p1_heuristic + eval_p2_heuristic)
+            eval_win_heuristic.append(eval_overall_heuristic)
+            eval_win_p1_heuristic.append(eval_p1_heuristic)
+            eval_win_p2_heuristic.append(eval_p2_heuristic)
             q_table_sizes.append(len(agent.q_table))
 
-            # Update trackers for dynamic role assignment
-            current_eval_p1 = heu_win_p1
-            current_eval_p2 = heu_win_p2
+            # Update trackers for dynamic role assignment based on heuristic benchmark
+            current_eval_p1 = eval_p1_heuristic
+            current_eval_p2 = eval_p2_heuristic
+
+            # Auto-curriculum advancement based on heuristic evaluation performance.
+            # Advance when both P1 and P2 meet decoupled thresholds.
+            if eval_p1_heuristic > 0.85 and eval_p2_heuristic > 0.70 and current_curriculum_phase < 2:
+                current_curriculum_phase += 1
 
             print(
                 f"Episodes {start+1:6d}-{ep+1:6d} | "
-                f"Eval win vs Random: {eval_win_random[-1]:6.3f} | "
-                f"Eval win vs Heuristic: {eval_win_heuristic[-1]:6.3f} | "
-                f"Eval avg reward (heuristic): {heu_avg_reward:8.3f} | "
-                f"phase_opponent: {opponent_type}"
+                f"Eval vs random (overall): {eval_overall_random:6.3f} | "
+                f"Eval vs heuristic P1: {eval_p1_heuristic:6.3f} | "
+                f"Eval vs heuristic P2: {eval_p2_heuristic:6.3f} | "
+                f"Eval vs heuristic avg reward: {eval_avg_reward_heuristic:8.3f} | "
+                f"curriculum_phase: {current_curriculum_phase}"
             )
 
         # Every 5000 episodes, snapshot the current Q-table into the opponent pool
@@ -579,9 +581,7 @@ def train(
         episode_lengths=episode_lengths,
         num_episodes=num_episodes,
         eval_win_random=np.array(eval_win_random, dtype=np.float32),
-        eval_reward_random=np.array(eval_reward_random, dtype=np.float32),
         eval_win_heuristic=np.array(eval_win_heuristic, dtype=np.float32),
-        eval_reward_heuristic=np.array(eval_reward_heuristic, dtype=np.float32),
         eval_win_p1_heuristic=np.array(eval_win_p1_heuristic, dtype=np.float32),
         eval_win_p2_heuristic=np.array(eval_win_p2_heuristic, dtype=np.float32),
         q_table_sizes=np.array(q_table_sizes, dtype=np.int32),

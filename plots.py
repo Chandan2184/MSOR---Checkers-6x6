@@ -28,7 +28,7 @@ def plot_learning_curve(window: int = 1000):
     win_ma = np.convolve(win_flags, np.ones(window) / window, mode="valid")
     xs_train = np.arange(len(win_ma)) + window
 
-    # Evaluation win rates at each 1000-episode checkpoint
+    # Evaluation win rates at each 1000-episode checkpoint (decoupled benchmarks)
     eval_checkpoints = (np.arange(len(eval_win_random)) + 1) * 1000
 
     plt.figure(figsize=(12, 7))
@@ -36,19 +36,21 @@ def plot_learning_curve(window: int = 1000):
     # Noisy training win rate (semi-transparent)
     plt.plot(xs_train, win_ma, label="Training win rate (moving avg)", color="tab:blue", alpha=0.4)
 
-    # Clean evaluation win rates vs fixed benchmarks
+    # Clean evaluation win rate vs Random
     plt.plot(
         eval_checkpoints,
         eval_win_random,
-        label="Eval win vs Random",
+        label="Evaluation win rate vs Random",
         color="tab:orange",
         linewidth=2.0,
     )
+
+    # Clean evaluation win rate vs Heuristic
     plt.plot(
         eval_checkpoints,
         eval_win_heuristic,
-        label="Eval win vs Heuristic",
-        color="tab:purple",
+        label="Evaluation win rate vs Heuristic",
+        color="tab:red",
         linewidth=2.0,
     )
 
