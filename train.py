@@ -9,6 +9,13 @@ import numpy as np
 from checkers_env import make_env, BOARD_SIZE
 from q_agent import QLearningAgent, observation_to_state, Action, State
 
+# Expanded opponent pool type for self-play:
+# {
+#   "historical": [Q-table snapshots at key milestones],
+#   "recent":     [most recent Q-table snapshots, capped]
+# }
+OpponentPool = Dict[str, List[Dict[Tuple[State, Action], float]]]
+
 
 # region agent log
 def _agent_debug_log(
@@ -56,7 +63,7 @@ def evaluate_agent(
     agent: QLearningAgent,
     num_games: int,
     opponent_type: str,
-    opponent_pool: List[Dict[Tuple[State, Action], float]],
+    opponent_pool: OpponentPool,
 ) -> Tuple[float, float, float]:
     """
     Run a decoupled evaluation of the agent:
@@ -76,10 +83,8 @@ def evaluate_agent(
     def _play_one(agent_player_id: int):
         nonlocal total_reward, wins_p0, wins_p1, games_p0, games_p1
 
-        # Sample historical opponent for self-play, if available
-        opponent_q_table = None
-        if opponent_type == "self_play" and opponent_pool:
-            opponent_q_table = opponent_pool[np.random.randint(len(opponent_pool))]
+        # Sample opponent from the expanded pool for self-play, if applicable
+        opponent_q_table = sample_opponent_q_table(opponent_pool, opponent_type)
 
         ep_reward, winner, _steps = run_episode(
             env,
@@ -387,6 +392,40 @@ def run_episode(
     return total_reward, winner, steps
 
 
+def sample_opponent_q_table(
+    opponent_pool: OpponentPool,
+    opponent_type: str,
+) -> Optional[Dict[Tuple[State, Action], float]]:
+    """
+    Sample an opponent Q-table from the expanded opponent pool for self-play.
+
+    Sampling policy:
+        - If opponent_type is not "self_play", return None.
+        - If both "recent" and "historical" lists are non-empty, choose
+          "recent" with probability 0.7 and "historical" with probability 0.3,
+          then random.choice within the selected sub-pool.
+        - If only one list is non-empty, sample uniformly from that list.
+        - If both lists are empty, return None.
+    """
+    if opponent_type != "self_play":
+        return None
+
+    recent = opponent_pool.get("recent", [])
+    historical = opponent_pool.get("historical", [])
+
+    if not recent and not historical:
+        return None
+
+    if recent and historical:
+        if random.random() < 0.7:
+            return random.choice(recent)
+        return random.choice(historical)
+
+    if recent:
+        return random.choice(recent)
+    return random.choice(historical)
+
+
 def train(
     num_episodes: int = 100_000,
     gamma: float = 0.99,
@@ -397,8 +436,10 @@ def train(
     env = make_env()
     agent = QLearningAgent(env.action_space)
 
-    # Historical opponent pool for self-play (to prevent catastrophic forgetting)
-    opponent_pool: List[Dict[Tuple[State, Action], float]] = []
+    # Expanded opponent pool for self-play (to prevent catastrophic forgetting)
+    # "recent": capped list of most recent snapshots
+    # "historical": unbounded list of milestone snapshots
+    opponent_pool: OpponentPool = {"historical": [], "recent": []}
 
     # Stats
     rewards = np.zeros(num_episodes, dtype=np.float32)
@@ -406,14 +447,21 @@ def train(
     episode_lengths = np.zeros(num_episodes, dtype=np.int32)
 
     # Clean evaluation metrics (decoupled from training loop)
-    eval_win_rates: List[float] = []
-    eval_rewards: List[float] = []
-    eval_win_rates_p1: List[float] = []
-    eval_win_rates_p2: List[float] = []
+    # Decoupled benchmarks: vs Random and vs Heuristic opponents.
+    eval_win_random: List[float] = []
+    eval_reward_random: List[float] = []
+    eval_win_heuristic: List[float] = []
+    eval_reward_heuristic: List[float] = []
+    eval_win_p1_heuristic: List[float] = []
+    eval_win_p2_heuristic: List[float] = []
     q_table_sizes: List[int] = []
 
     # Curriculum phase: 0 = mostly random, 1 = mostly heuristic, 2 = mostly self-play
     current_curriculum_phase = 0
+
+    # Track the most recent evaluation win rates for dynamic role assignment
+    current_eval_p1 = 0.0
+    current_eval_p2 = 0.0
 
     for ep in range(num_episodes):
         # Performance-based auto-curriculum for opponent type.
@@ -434,13 +482,18 @@ def train(
             p=probs,
         )
 
-        # For self-play, sample a historical opponent Q-table if available
-        opponent_q_table = None
-        if opponent_type == "self_play" and opponent_pool:
-            opponent_q_table = opponent_pool[np.random.randint(len(opponent_pool))]
+        # For self-play, sample an opponent Q-table from the expanded pool
+        opponent_q_table = sample_opponent_q_table(opponent_pool, opponent_type)
 
-        # Randomly assign the agent to be Player 0 or Player 1 for this episode
-        agent_player_id = int(np.random.choice([0, 1]))
+        # Dynamically assign the agent as Player 0 or Player 1
+        # If P2 is significantly weaker (P1 win rate exceeds P2 by > 0.15),
+        # bias training towards playing as Player 2 (agent_player_id = 1).
+        if (current_eval_p1 - current_eval_p2) > 0.15:
+            # 25% as Player 0, 75% as Player 1
+            agent_player_id = int(np.random.choice([0, 1], p=[0.25, 0.75]))
+        else:
+            # Standard 50/50 split
+            agent_player_id = int(np.random.choice([0, 1], p=[0.5, 0.5]))
 
         # Only seed the very first reset to keep episodes deterministic but varied
         seed = 42 if ep == 0 else None
@@ -464,42 +517,57 @@ def train(
             # Episode window start index for logging
             start = max(0, ep - 999)
 
-            # Run a decoupled evaluation: 100 games (50 as P1, 50 as P2)
-            eval_win_p1, eval_win_p2, eval_avg_reward = evaluate_agent(
+            # Run decoupled evaluations against fixed opponents (Random and Heuristic).
+            # 1) Benchmark vs Random opponent
+            rnd_win_p1, rnd_win_p2, rnd_avg_reward = evaluate_agent(
                 env,
                 agent,
                 num_games=100,
-                opponent_type=opponent_type,
-                opponent_pool=opponent_pool,
+                opponent_type="random",
+                opponent_pool={"historical": [], "recent": []},
             )
-            # Overall win rate as mean of P1 and P2 win rates
-            eval_win_rate = 0.5 * (eval_win_p1 + eval_win_p2)
-            eval_win_rates.append(eval_win_rate)
-            eval_rewards.append(eval_avg_reward)
-            eval_win_rates_p1.append(eval_win_p1)
-            eval_win_rates_p2.append(eval_win_p2)
+            eval_win_random.append(0.5 * (rnd_win_p1 + rnd_win_p2))
+            eval_reward_random.append(rnd_avg_reward)
+
+            # 2) Benchmark vs Heuristic opponent
+            heu_win_p1, heu_win_p2, heu_avg_reward = evaluate_agent(
+                env,
+                agent,
+                num_games=100,
+                opponent_type="heuristic",
+                opponent_pool={"historical": [], "recent": []},
+            )
+            eval_win_heuristic.append(0.5 * (heu_win_p1 + heu_win_p2))
+            eval_reward_heuristic.append(heu_avg_reward)
+            eval_win_p1_heuristic.append(heu_win_p1)
+            eval_win_p2_heuristic.append(heu_win_p2)
             q_table_sizes.append(len(agent.q_table))
 
-            # Auto-curriculum advancement based on evaluation performance.
-            # If combined eval win rate exceeds 80%, advance to the next phase (up to phase 2).
-            if eval_win_rate > 0.80 and current_curriculum_phase < 2:
-                current_curriculum_phase += 1
+            # Update trackers for dynamic role assignment
+            current_eval_p1 = heu_win_p1
+            current_eval_p2 = heu_win_p2
 
             print(
                 f"Episodes {start+1:6d}-{ep+1:6d} | "
-                f"Eval win P1: {eval_win_p1:6.3f} | "
-                f"Eval win P2: {eval_win_p2:6.3f} | "
-                f"Eval avg reward: {eval_avg_reward:8.3f} | "
-                f"phase_opponent: {opponent_type} | "
-                f"curriculum_phase: {current_curriculum_phase}"
+                f"Eval win vs Random: {eval_win_random[-1]:6.3f} | "
+                f"Eval win vs Heuristic: {eval_win_heuristic[-1]:6.3f} | "
+                f"Eval avg reward (heuristic): {heu_avg_reward:8.3f} | "
+                f"phase_opponent: {opponent_type}"
             )
 
-        # Every 5000 episodes, snapshot the current Q-table into the historical pool
+        # Every 5000 episodes, snapshot the current Q-table into the opponent pool
         if (ep + 1) % 5000 == 0:
-            opponent_pool.append(copy.deepcopy(agent.q_table))
-            # Cap the historical pool size to avoid excessive memory use
-            if len(opponent_pool) > 5:
-                opponent_pool.pop(0)
+            # Single snapshot used for both recent and (optionally) historical pools
+            snapshot = copy.deepcopy(agent.q_table)
+
+            # Maintain a capped "recent" pool (most recent 5 models)
+            opponent_pool["recent"].append(snapshot)
+            if len(opponent_pool["recent"]) > 5:
+                opponent_pool["recent"].pop(0)
+
+            # Add milestone snapshots to the unbounded "historical" pool
+            if (ep + 1) in {5000, 10000, 25000, 50000}:
+                opponent_pool["historical"].append(snapshot)
 
     # Save Q-table, training stats, and clean evaluation metrics
     with MODEL_PATH.open("wb") as f:
@@ -510,10 +578,12 @@ def train(
         winners=winners,
         episode_lengths=episode_lengths,
         num_episodes=num_episodes,
-        eval_win_rates=np.array(eval_win_rates, dtype=np.float32),
-        eval_rewards=np.array(eval_rewards, dtype=np.float32),
-        eval_win_rates_p1=np.array(eval_win_rates_p1, dtype=np.float32),
-        eval_win_rates_p2=np.array(eval_win_rates_p2, dtype=np.float32),
+        eval_win_random=np.array(eval_win_random, dtype=np.float32),
+        eval_reward_random=np.array(eval_reward_random, dtype=np.float32),
+        eval_win_heuristic=np.array(eval_win_heuristic, dtype=np.float32),
+        eval_reward_heuristic=np.array(eval_reward_heuristic, dtype=np.float32),
+        eval_win_p1_heuristic=np.array(eval_win_p1_heuristic, dtype=np.float32),
+        eval_win_p2_heuristic=np.array(eval_win_p2_heuristic, dtype=np.float32),
         q_table_sizes=np.array(q_table_sizes, dtype=np.int32),
     )
     print(f"Saved Q-table to {MODEL_PATH}")

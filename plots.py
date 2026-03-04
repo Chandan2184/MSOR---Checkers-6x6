@@ -20,29 +20,35 @@ def plot_learning_curve(window: int = 1000):
     rewards = data["rewards"]
     winners = data["winners"]
     num_episodes = int(data["num_episodes"])
-    eval_win_rates_p1 = data["eval_win_rates_p1"]
-    eval_win_rates_p2 = data["eval_win_rates_p2"]
+    eval_win_random = data["eval_win_random"]
+    eval_win_heuristic = data["eval_win_heuristic"]
 
     # Noisy training win rate (agent wins, regardless of color)
     win_flags = (winners == 0).astype(np.float32)
     win_ma = np.convolve(win_flags, np.ones(window) / window, mode="valid")
     xs_train = np.arange(len(win_ma)) + window
 
-    # Evaluation win rate (overall) at each 1000-episode checkpoint
-    eval_overall = 0.5 * (eval_win_rates_p1 + eval_win_rates_p2)
-    eval_checkpoints = (np.arange(len(eval_overall)) + 1) * 1000
+    # Evaluation win rates at each 1000-episode checkpoint
+    eval_checkpoints = (np.arange(len(eval_win_random)) + 1) * 1000
 
     plt.figure(figsize=(12, 7))
 
     # Noisy training win rate (semi-transparent)
     plt.plot(xs_train, win_ma, label="Training win rate (moving avg)", color="tab:blue", alpha=0.4)
 
-    # Clean evaluation win rate
+    # Clean evaluation win rates vs fixed benchmarks
     plt.plot(
         eval_checkpoints,
-        eval_overall,
-        label="Evaluation win rate (overall)",
-        color="tab:blue",
+        eval_win_random,
+        label="Eval win vs Random",
+        color="tab:orange",
+        linewidth=2.0,
+    )
+    plt.plot(
+        eval_checkpoints,
+        eval_win_heuristic,
+        label="Eval win vs Heuristic",
+        color="tab:purple",
         linewidth=2.0,
     )
 
@@ -93,14 +99,24 @@ def plot_game_length(window: int = 1000):
 def plot_p1_vs_p2_eval():
     data = np.load(STATS_PATH)
     num_episodes = int(data["num_episodes"])
-    eval_win_rates_p1 = data["eval_win_rates_p1"]
-    eval_win_rates_p2 = data["eval_win_rates_p2"]
+    eval_win_p1_heuristic = data["eval_win_p1_heuristic"]
+    eval_win_p2_heuristic = data["eval_win_p2_heuristic"]
 
-    eval_checkpoints = (np.arange(len(eval_win_rates_p1)) + 1) * 1000
+    eval_checkpoints = (np.arange(len(eval_win_p1_heuristic)) + 1) * 1000
 
     plt.figure(figsize=(10, 6))
-    plt.plot(eval_checkpoints, eval_win_rates_p1, label="Eval win rate as P1", color="tab:orange")
-    plt.plot(eval_checkpoints, eval_win_rates_p2, label="Eval win rate as P2", color="tab:purple")
+    plt.plot(
+        eval_checkpoints,
+        eval_win_p1_heuristic,
+        label="Eval win rate as P1 vs Heuristic",
+        color="tab:orange",
+    )
+    plt.plot(
+        eval_checkpoints,
+        eval_win_p2_heuristic,
+        label="Eval win rate as P2 vs Heuristic",
+        color="tab:purple",
+    )
     plt.xlabel("Episode")
     plt.ylabel("Win rate")
     plt.title("Evaluation Win Rate: Player 1 vs Player 2")

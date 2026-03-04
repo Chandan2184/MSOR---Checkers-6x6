@@ -172,11 +172,11 @@ class QLearningAgent:
             target = reward + gamma * max_next_q
 
             # Dynamic learning rate based on visit count with floor:
-            # alpha(s,a) = max(0.05, 1 / sqrt(N(s,a) + 1))
+            # alpha(s,a) = max(0.005, 1 / sqrt(N(s,a) + 1))
             key = (state, action)
             n = self.visit_counts.get(key, 0) + 1
             self.visit_counts[key] = n
-            alpha_sa = max(0.05, 1.0 / np.sqrt(float(n)))
+            alpha_sa = max(0.005, 1.0 / np.sqrt(float(n)))
 
             new_q = old_q + alpha_sa * (target - old_q)
             self._set_q_value(state, action, new_q)
