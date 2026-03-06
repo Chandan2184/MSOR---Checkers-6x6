@@ -470,8 +470,8 @@ def train(
             # Phase 1: 10% random, 80% heuristic, 10% self_play
             probs = np.array([0.1, 0.8, 0.1], dtype=np.float32)
         else:
-            # Phase 2: 0% random, 10% heuristic, 90% self_play
-            probs = np.array([0.0, 0.1, 0.9], dtype=np.float32)
+            # Phase 2: 0% random, 20% heuristic, 80% self_play
+            probs = np.array([0.0, 0.2, 0.8], dtype=np.float32)
 
         probs = probs / probs.sum()
         opponent_type = np.random.choice(
@@ -545,7 +545,7 @@ def train(
 
             # Auto-curriculum advancement based on heuristic evaluation performance.
             # Advance when both P1 and P2 meet decoupled thresholds.
-            if eval_p1_heuristic > 0.85 and eval_p2_heuristic > 0.70 and current_curriculum_phase < 2:
+            if eval_p1_heuristic > 0.75 and eval_p2_heuristic > 0.60 and current_curriculum_phase < 2:
                 current_curriculum_phase += 1
 
             print(
