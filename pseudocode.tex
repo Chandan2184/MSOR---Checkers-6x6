@@ -1,0 +1,121 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{lmodern}           % Latin Modern (default in many setups)
+\usepackage{mathptmx}          % Times-like (text + math)
+\usepackage{helvet}            % Helvetica (sans-serif) for text only
+\usepackage{newtxtext,newtxmath}  % New TX fonts (Times-like, good math)
+\usepackage{courier}
+\renewcommand{\familydefault}{\ttdefault}
+
+\title{Q-Learning Algorithm (off-policy)}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Input}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Discount rate $\gamma$ (gamma):} Importance of future rewards (e.g.\ $\gamma = 0.99$).
+  \item \textbf{State-dependent exploration parameter $N_0$:} Constant used in $\varepsilon(s) = N_0 / (N_0 + N(s))$; e.g.\ $N_0 = 100$.
+  \item \textbf{Learning rate $\alpha(s,a)$:} Dynamic step size,
+  \[
+  \alpha(s,a) = \max\left(0.005,\; \frac{1}{\sqrt{N(s,a) + 1}}\right),
+  \]
+  where $N(s,a)$ is the visit count for $(s,a)$.
+  \item \textbf{Number of episodes $K$:} Total number of training episodes.
+\end{itemize}
+
+\section*{Initialization}
+
+\begin{itemize}[noitemsep]
+  \item $i = 0$ (episode counter).
+  \item $Q(s,a) = 0$ for all $(s,a)$ when first visited; the Q-table is implemented as a dictionary (default 0.0 for unvisited pairs).
+  \item $N(s,a) = 0$ for all $(s,a)$ (visit count for state--action pairs).
+  \item $N(s) = 0$ for all $s$ (visit count for states, used for $\varepsilon(s)$).
+\end{itemize}
+
+\section*{Output}
+
+\begin{itemize}[noitemsep]
+  \item The estimated state-action value function $Q \approx Q^*$ (optimal $Q$).
+\end{itemize}
+
+\hrulefill
+
+\section*{Algorithm}
+
+\begin{enumerate}[noitemsep, leftmargin=*]
+  \item \textbf{Sample initial state $s_0$:} Reset environment; obtain observation and convert to canonical state $s_0$. Set current state $s_t = s_0$.
+
+  \item \textbf{Sample action $a_0$ for $s_0$} when following \textbf{$\varepsilon$-greedy policy} w.r.t.\ $Q$:
+  \begin{itemize}[noitemsep]
+    \item Compute $\varepsilon(s) = N_0 / (N_0 + N(s))$; increment $N(s)$.
+    \item With probability $\varepsilon(s)$, choose a random \textbf{legal} action; otherwise choose $a = \arg\max_{a' \in \mathcal{A}(s)} Q(s, a')$.
+  \end{itemize}
+
+  \item \textbf{while} $i < K$ \textbf{do}
+
+  \item \textbf{Take action $a_t$ in environment and observe $r_t$, $s_{t+1}$:}\\
+  Execute the agent's move (and opponent's reply if applicable). Observe cumulative reward $r_t$ over this cycle and next state $s_{t+1}$ (or terminal). Restrict to \textbf{legal} actions only.
+
+  \item $i \leftarrow i + 1$
+
+  \item \textbf{(Optional) Update exploration:} $\varepsilon(s)$ is state-dependent via $\varepsilon(s) = N_0/(N_0 + N(s))$; no global $\varepsilon$ decay is required.
+
+  \item \textbf{Compute TD target $\delta_t$:}
+  \begin{itemize}[noitemsep]
+    \item If $s_{t+1}$ is \textbf{terminal:} $\delta_t = r_t$.
+    \item \textbf{Otherwise (bootstrapping):} $\delta_t = r_t + \gamma \max_{a'} Q(s_{t+1}, a')$, where the maximum is taken over \textbf{legal} actions $a' \in \mathcal{A}(s_{t+1})$ only.
+  \end{itemize}
+
+  \item \textbf{Update estimated state-action value:}
+  \[
+  Q(s_t, a_t) \leftarrow Q(s_t, a_t) + \alpha(s_t, a_t) \cdot \bigl( \delta_t - Q(s_t, a_t) \bigr),
+  \]
+  where $\alpha(s_t, a_t) = \max\bigl(0.005,\, 1\big/\sqrt{N(s_t,a_t)+1}\,\bigr)$; increment $N(s_t, a_t)$.
+
+  \item \textbf{Update state:}
+  \begin{itemize}[noitemsep]
+    \item If not terminated or truncated: $s_t \leftarrow s_{t+1}$.
+    \item Otherwise: sample new initial state $s_0$ and set $s_t \leftarrow s_0$.
+  \end{itemize}
+
+  \item \textbf{Sample action $a_t$ for $s_t$} when following \textbf{$\varepsilon$-greedy policy} w.r.t.\ $Q$ (over legal actions only).
+\end{enumerate}
+
+\textbf{end while}
+
+\hrulefill
+
+\section*{Backward-pass variant (as implemented)}
+
+In the codebase, updates are performed in a \textbf{backward pass} after each episode:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{During episode:} Collect in order the list of transitions $(s, a, r, s', \mathcal{A}(s'))$ (agent move + opponent reply per step; $r$ is cumulative over that cycle).
+  \item \textbf{After episode:} For each transition in \textbf{reverse} order, compute $\delta = r + \gamma \max_{a' \in \mathcal{A}(s')} Q(s', a')$ (or $\delta = r$ if $s'$ is terminal), then apply
+  \[
+  Q(s,a) \leftarrow Q(s,a) + \alpha(s,a) \cdot \bigl( \delta - Q(s,a) \bigr),
+  \]
+  with $\alpha(s,a)$ and $N(s,a)$ as above. Processing in reverse ensures that $Q(s', \cdot)$ is already updated when used in $\delta$.
+\end{itemize}
+
+\hrulefill
+
+\section*{Notes}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Off-policy:} The update uses $\max_{a'} Q(s', a')$ (greedy target), the behavior policy is $\varepsilon$-greedy.
+  \item \textbf{Legal actions:} All maximizations and action selections are over \textbf{legal} actions only (e.g.\ forced capture, multi-jump in checkers).
+  \item \textbf{State representation:} States are canonical (e.g.\ 18-tuple of playable squares); symmetry is used so both sides share the same representation.
+\end{itemize}
+
+\end{document}

@@ -130,8 +130,9 @@ def plot_p1_vs_p2_eval():
 
 def performance_distribution(num_games: int = 1000):
     """
-    Compare Random, Heuristic, and Q-learning agents against a common opponent.
-    Produces a stacked bar chart of Win/Loss/Draw percentages.
+    Compare Random, Heuristic, and Q-learning agents against a common opponent
+    (PriorityHeuristicAgent). Produces a stacked bar chart of Win/Loss/Draw
+    percentages from Player 0's perspective.
     """
     env = make_env()
     if not MODEL_PATH.exists():
@@ -149,38 +150,38 @@ def performance_distribution(num_games: int = 1000):
         for _ in range(num_games):
             env = make_env()
             if agent_type == "q":
+                # Q-Learning (P0) vs Heuristic (P1) — already uses heuristic opponent
                 winner = run_episode_play(env, q_agent, opponent_type="heuristic", render=False)
             elif agent_type == "heuristic":
-                # Heuristic vs Random baseline: follow env.current_player to support multi-jumps.
-                env.reset()
-                h_agent = PriorityHeuristicAgent(player_id=0)
+                # Heuristic vs Heuristic: P0 and P1 both use PriorityHeuristicAgent
+                p1_agent = PriorityHeuristicAgent(player_id=0)
+                p2_agent = PriorityHeuristicAgent(player_id=1)
+                obs, _ = env.reset()
                 done = False
                 winner_local = -1
-                obs, _ = env.reset()
                 while not done:
                     current_player = int(obs["current_player"])
                     if current_player == 0:
-                        # P1 heuristic
-                        move = h_agent.select_move(env)
+                        move = p1_agent.select_move(env)
                     else:
-                        # P2 random
-                        move = random_legal_move(env, player_id=1)
+                        move = p2_agent.select_move(env)
                     obs, _, term, trunc, info = env.step(move)
                     done = term or trunc
                     if done:
                         winner_local = info.get("winner", -1)
                         break
                 winner = winner_local
-            else:  # random vs random
-                env.reset()
+            else:  # random: P0 random, P1 heuristic
+                p2_agent = PriorityHeuristicAgent(player_id=1)
+                obs, _ = env.reset()
                 done = False
                 winner_local = -1
-                obs, _ = env.reset()
-                import random
-
                 while not done:
                     current_player = int(obs["current_player"])
-                    move = random_legal_move(env, player_id=current_player)
+                    if current_player == 0:
+                        move = random_legal_move(env, player_id=0)
+                    else:
+                        move = p2_agent.select_move(env)
                     obs, _, term, trunc, info = env.step(move)
                     done = term or trunc
                     if done:
@@ -188,6 +189,7 @@ def performance_distribution(num_games: int = 1000):
                         break
                 winner = winner_local
 
+            # From Player 0's perspective: 0 = win, 1 = loss, else draw
             if winner == 0:
                 wins += 1
             elif winner == 1:
@@ -202,9 +204,9 @@ def performance_distribution(num_games: int = 1000):
         }
 
     agents = [
-        ("Random", "random"),
-        ("Heuristic", "heuristic"),
-        ("Q-Learning", "q"),
+        ("Random vs Heuristic", "random"),
+        ("Heuristic vs Heuristic", "heuristic"),
+        ("Q-Learning vs Heuristic", "q"),
     ]
 
     results = [eval_agent(name, t) for name, t in agents]
@@ -223,7 +225,7 @@ def performance_distribution(num_games: int = 1000):
     plt.bar(x, losses, bottom=bottom_ld, label="Losses")
     plt.xticks(x, labels)
     plt.ylabel("Proportion of games")
-    plt.title("Performance Distribution vs Common Opponent")
+    plt.title("Performance Distribution vs Heuristic Opponent")
     plt.legend()
     plt.tight_layout()
     plt.savefig(ROOT / "performance_distribution.png", dpi=200)

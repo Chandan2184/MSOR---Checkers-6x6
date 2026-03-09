@@ -1,0 +1,272 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+}
+
+\title{Reinforcement Learning and Heuristic Methods for 6$\times$6 Checkers}
+\author{A Written Document (30\%)\\Max.\ 15 thesis-style pages (all incl.) + AI statement}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{AI Statement}
+
+This report was prepared with the assistance of AI tools for drafting, structuring, and mathematical notation. The underlying codebase, experiments, and interpretations are the author's own. AI was used to improve clarity and alignment with the specified rubric; all technical content has been verified against the implementation.
+
+\hrulefill
+
+\section{Problem Description: A Written Instruction of the Game}
+
+We consider \textbf{two-player 6$\times$6 Checkers} (English draughts on a reduced board) as a turn-based, zero-sum game with perfect information. The following rules define the environment used in this project.
+
+\subsection{Board and Setup}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Board:} A 6$\times$6 grid. Only the \textbf{dark squares} are playable; i.e., squares where $(r + c) \equiv 1 \pmod{2}$ for row $r$ and column $c$ (zero-indexed). There are 18 such squares.
+  \item \textbf{Pieces:} Each player has pieces (men) that occupy dark squares. Men are distinguished by ownership (Player 1 vs Player 2) and by type: \textbf{man} or \textbf{king}.
+  \item \textbf{Initial configuration:} Each player has one row of men on the two dark-squares rows closest to their side. Player 1 (id 0) starts at the ``bottom'' (rows 4--5), Player 2 (id 1) at the ``top'' (rows 0--1). No kings at the start.
+\end{itemize}
+
+\subsection{Movement Rules}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Diagonal moves only:} Every move is along a diagonal, one square at a time for a non-capture move.
+  \item \textbf{Men:} Move only \textbf{forward} (toward the opponent's back rank): Player 1 upward (decreasing row), Player 2 downward (increasing row).
+  \item \textbf{Kings:} May move \textbf{one step} in any of the four diagonal directions.
+  \item \textbf{Single-step moves:} A piece may move to an adjacent dark square if it is empty.
+  \item \textbf{Single captures:} A piece may jump over an adjacent opponent piece to the next dark square if that square is empty. The jumped piece is removed.
+  \item \textbf{Forced capture:} If \textbf{any} capture is legal for the current player, then \textbf{only} capture moves are legal; simple moves are disallowed.
+  \item \textbf{Multi-jump:} If after a capture the same piece can capture again (without promotion in between), the same player \textbf{must} continue with that piece; the turn does not end until no further capture is possible or the piece is promoted.
+  \item \textbf{Promotion:} When a man reaches the opponent's back rank (row 0 for Player 1, row 5 for Player 2), it is promoted to a king and the turn ends.
+\end{itemize}
+
+\subsection{Termination and Outcome}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Win:} The game is won by the player who either eliminates all opponent pieces or leaves the opponent with no legal move.
+  \item \textbf{Loss:} The other player loses.
+  \item \textbf{Draw:} The game is drawn if (1) a move limit (e.g.\ 200 steps) is reached, or (2) a no-progress rule is triggered (e.g.\ 40 consecutive steps without a capture or without a man move).
+\end{itemize}
+
+\subsection{Summary for the Agent}
+
+The learning agent observes the board and current player, chooses a \textbf{legal} move (respecting forced capture and multi-jump), and receives scalar rewards. The goal is to maximize cumulative reward, which is aligned with winning and with intermediate events (captures, promotions) as defined in the next section.
+
+\hrulefill
+
+\section{Mathematical Formulation}
+
+The game is formulated as a \textbf{Markov Decision Process (MDP)} from the perspective of one player (the agent). We define states, actions, transition structure, and rewards precisely.
+
+\subsection{State Space $\mathcal{S}$}
+
+A \textbf{state} is a compact, hashable representation of the information needed to choose a move, in a \textbf{canonical} view (always from the perspective of the player about to move).
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Raw observation:} The environment provides $\omega = (B, p)$ where $B \in \{0,1,2,3,4\}^{6 \times 6}$ is the board ($0$ = empty, $1$ = P1 man, $2$ = P2 man, $3$ = P1 king, $4$ = P2 king) and $p \in \{0,1\}$ is the current player.
+  \item \textbf{Canonical state:} If $p = 1$, the board is flipped and piece labels are swapped (1$\leftrightarrow$2, 3$\leftrightarrow$4) so that the position is equivalent to ``current player is Player 0.'' The state does not include $p$ explicitly.
+  \item \textbf{Reduced representation:} Only the 18 playable dark squares are stored, in a fixed order, as a tuple of 18 integers in $\{0,1,2,3,4\}$. Thus
+  \[
+  s = \bigl( B_{i_1}, B_{i_2}, \ldots, B_{i_{18}} \bigr) \in \{0,1,2,3,4\}^{18},
+  \]
+  where $(i_1,\ldots,i_{18})$ is the fixed ordering of dark squares. The set of all such tuples defines the \textbf{state space} $\mathcal{S}$. In practice we use a \textbf{tabular} representation that only stores states that have been visited.
+\end{itemize}
+
+\subsection{Action Space $\mathcal{A}$}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Environment action:} A move is encoded as a 4-tuple $a = (s_r, s_c, e_r, e_c)$: start row, start column, end row, end column, each in $\{0,\ldots,5\}$. The full nominal action space is $\mathcal{A}_{\text{full}} = \{0,\ldots,5\}^4$ (size $6^4 = 1296$).
+  \item \textbf{Legal actions:} In state $s$, only a subset $\mathcal{A}(s) \subseteq \mathcal{A}_{\text{full}}$ is legal. The agent must choose $a \in \mathcal{A}(s)$; invalid actions are rejected and leave the state unchanged.
+\end{itemize}
+
+\subsection{Transitions}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Deterministic given opponent:} For a fixed opponent policy, the transition is deterministic: taking action $a$ in state $s$ leads to a unique next board and next player (or terminal). Thus
+  \[
+  (s, a) \mapsto (s', r, \text{done}),
+  \]
+  where $s'$ is the state after the agent's move and the opponent's reply (if any), $r$ is the reward accumulated over that agent move, and ``done'' indicates termination.
+  \item So we have
+  \[
+  P(s', r \mid s, a) = \text{deterministic given opponent policy}.
+  \]
+\end{itemize}
+
+\subsection{Rewards}
+
+Rewards are \textbf{normalized} and defined from the \textbf{current player's} perspective.
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Terminal rewards:} Win: $r = +1.0$. Loss: $r = -1.0$. Draw: $r = 0.0$.
+  \item \textbf{Intermediate rewards:} Capture: $r = +0.1$. Promotion to king: $r = +0.15$. Per-step penalty: $r = -0.005$ each move.
+  \item \textbf{Return:} The agent maximizes the \textbf{discounted return}
+  \[
+  G_t = \sum_{k=0}^{\infty} \gamma^k R_{t+k},
+  \]
+  with discount factor $\gamma \in (0,1]$ (e.g.\ $\gamma = 0.99$).
+\end{itemize}
+
+This completes the MDP specification $(\mathcal{S}, \mathcal{A}, P, R, \gamma)$.
+
+\hrulefill
+
+\section{Solution Approach}
+
+We implement and compare \textbf{two} approaches: (1) a \textbf{reinforcement learning} algorithm (tabular Q-learning with backward pass and curriculum), and (2) a \textbf{heuristic} rule-based strategy.
+
+\subsection{Reinforcement Learning: Tabular Q-Learning with Backward Pass}
+
+\textbf{Idea:} Approximate the optimal action-value function $Q^*(s,a)$ with a table $\widehat{Q}(s,a)$. The agent collects a full episode of transitions, then updates $\widehat{Q}$ in \textbf{reverse} order.
+
+\textbf{Bellman equation (optimal Q):}
+\[
+Q^*(s,a) = \mathbb{E}\left[ R + \gamma \max_{a'} Q^*(S', a') \mid S=s, A=a \right].
+\]
+
+\textbf{Update rule (Q-learning):} For a transition $(s, a, r, s')$ with legal next actions $\mathcal{A}(s')$:
+\[
+\widehat{Q}(s,a) \leftarrow \widehat{Q}(s,a) + \alpha \Bigl( r + \gamma \max_{a' \in \mathcal{A}(s')} \widehat{Q}(s', a') - \widehat{Q}(s,a) \Bigr),
+\]
+where $\alpha = \max\bigl(0.005,\, 1\big/\sqrt{N(s,a)+1}\,\bigr)$.
+
+\textbf{State-dependent exploration:} $\varepsilon(s) = N_0 \big/ (N_0 + N(s))$ with $N_0 = 100$. With probability $\varepsilon(s)$ the agent chooses a random legal action; otherwise $\arg\max_{a \in \mathcal{A}(s)} \widehat{Q}(s,a)$.
+
+\textbf{Pseudocode: Q-learning agent (one episode, backward pass)}
+
+\begin{lstlisting}
+1.  Initialize: observation <- env.reset(); episode_memory <- []
+2.  Repeat until episode ends:
+3.      s <- observation_to_state(observation)
+4.      legal_actions <- env.get_legal_actions(current_player)
+5.      a <- epsilon_greedy(s, legal_actions)
+6.      Execute a in env; obtain (observation', r, done) and opponent move(s)
+7.      s' <- observation_to_state(observation')  (or None if done)
+8.      legal_next <- legal actions for agent in s' (or [] if done)
+9.      Append (s, a, r, s', legal_next) to episode_memory
+10.     observation <- observation'
+11. Backward pass: for (s, a, r, s', legal_next) in reverse(episode_memory):
+12.     target <- r + gamma * max_{a' in legal_next} Q(s', a')
+13.     alpha <- max(0.005, 1/sqrt(N(s,a)+1)); N(s,a) += 1
+14.     Q(s,a) <- Q(s,a) + alpha * (target - Q(s,a))
+15. Return
+\end{lstlisting}
+
+\textbf{Training curriculum:}
+\begin{itemize}[noitemsep]
+  \item \textbf{Phase 0:} 80\% random, 20\% heuristic.
+  \item \textbf{Phase 1:} 10\% random, 80\% heuristic, 10\% self-play.
+  \item \textbf{Phase 2:} 0\% random, 20\% heuristic, 80\% self-play.
+\end{itemize}
+Advancement occurs when heuristic-benchmark win rates satisfy: win rate as P1 $> 0.75$ and win rate as P2 $> 0.60$. Self-play uses an opponent pool of saved Q-table snapshots.
+
+\subsection{Heuristic Method: Priority-Based Rule Strategy}
+
+\textbf{Idea:} A rule-based agent that chooses one move according to a \textbf{fixed priority list}. No learning; deterministic up to tie-breaking (random among moves that tie).
+
+\textbf{Priority order (highest first):}
+\begin{enumerate}[noitemsep]
+  \item \textbf{Forced capture:} If any legal move is a capture ($|\text{end\_row} - \text{start\_row}| = 2$), choose uniformly among captures.
+  \item \textbf{King promotion:} If any legal move promotes a man to a king, choose uniformly among such moves.
+  \item \textbf{Edge safety:} If any legal move lands on column 0 or 5, choose uniformly among those.
+  \item \textbf{Advance center:} Score each move by inverse distance to board center; keep those with maximum score and choose uniformly.
+  \item \textbf{Random:} Otherwise choose uniformly among all legal moves.
+\end{enumerate}
+
+\textbf{Pseudocode: Priority heuristic agent}
+
+\begin{lstlisting}
+1.  legal <- get_legal_actions(env, player_id)
+2.  capture_moves <- { m in legal : |m.er - m.sr| == 2 }
+3.  if capture_moves != empty then return random_choice(capture_moves)
+4.  promo_moves <- { m in legal : move promotes man to king }
+5.  if promo_moves != empty then return random_choice(promo_moves)
+6.  edge_moves <- { m in legal : m.ec in {0, BOARD_SIZE-1} }
+7.  if edge_moves != empty then return random_choice(edge_moves)
+8.  center_score(m) <- (BOARD_SIZE-1) - distance((m.er,m.ec), center)
+9.  best <- argmax_{m in legal} center_score(m)
+10. if center_score(best) > 0 then
+11.     best_moves <- { m in legal : center_score(m) == center_score(best) }
+12.     return random_choice(best_moves)
+13. return random_choice(legal)
+\end{lstlisting}
+
+\hrulefill
+
+\section{Analysis: Comparison of Performance and Behavior}
+
+\subsection{Performance}
+
+Evaluation is \textbf{decoupled}: every 1000 training episodes the agent is evaluated with no exploration in 100 games against a fixed random opponent and 100 games against a fixed heuristic opponent (50 as P1, 50 as P2 each). Reported metrics are win rate vs random, win rate vs heuristic, and win rate as P1/P2 vs heuristic.
+
+\textbf{Expected behavior:} Vs random, the Q-learning agent should reach high win rates. Vs heuristic, win rate typically rises with training. P1 vs P2 asymmetry is addressed by curriculum role assignment. The performance distribution plot (stacked bar chart) summarizes win/draw/loss for Random, Heuristic, and Q-Learning vs a common opponent.
+
+\subsection{Behavioral Comparison}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspect} & \textbf{Q-learning agent} & \textbf{Heuristic agent} \\
+\midrule
+Adaptation & Improves with data; generalizes within visited state space & Fixed rules; no adaptation \\
+State representation & Full canonical board (18 cells); only visited states stored & Same board for legal moves and priorities \\
+Exploration & State-dependent $\varepsilon(s)$ & No exploration; deterministic given ties \\
+Opponent dependence & Trained on curriculum; evaluation opponent-fixed & Same behavior regardless of opponent \\
+Tactics & Learns via reward; may discover non-obvious sequences & Explicitly prioritizes captures and promotions \\
+Positional play & Emerges from Q-values; uneven early & Edge safety and advance center rules \\
+Compute & Tabular storage and backward pass; cost grows with visits & Very low; few rule checks \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The heuristic is \textbf{interpretable} and \textbf{stable}; the Q-learning agent can become \textbf{stronger} with enough training and curriculum, at the cost of time and memory.
+
+\hrulefill
+
+\section{Visualization: Graphical Representation of Results}
+
+The following figures are produced by the plotting scripts from \texttt{training\_stats.npz}.
+
+\begin{enumerate}[noitemsep]
+  \item \textbf{Learning curve (win rate):} Training win rate (moving average), evaluation win rate vs Random, and vs Heuristic at each 1000-episode checkpoint.
+  \item \textbf{State-space growth:} Number of state-action entries in the Q-table at each checkpoint.
+  \item \textbf{Game length:} Moving average of episode length over training.
+  \item \textbf{P1 vs P2 evaluation (vs heuristic):} Win rate as P1 and as P2 vs heuristic.
+  \item \textbf{Performance distribution:} Stacked bar chart of win/draw/loss for Random, Heuristic, and Q-Learning vs a common opponent.
+\end{enumerate}
+
+\textbf{Figure files} (generated by \texttt{plots.py}):\\
+\texttt{learning\_curve\_win\_rate.png}, \texttt{state\_space\_growth.png}, \texttt{game\_length.png}, \texttt{eval\_p1\_vs\_p2\_win\_rates.png}, \texttt{performance\_distribution.png}.
+
+\hrulefill
+
+\section*{References}
+
+\begin{enumerate}[noitemsep]
+  \item Sutton, R.\ S., \& Barto, A.\ G.\ (2018). \textit{Reinforcement Learning: An Introduction} (2nd ed.). MIT Press.
+  \item Watkins, C.\ J.\ C.\ H.\ (1989). \textit{Learning from Delayed Rewards}. PhD thesis, University of Cambridge.
+  \item Gymnasium: \url{https://gymnasium.farama.org/}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textit{Document generated to satisfy the written report rubric (30\%): problem description, mathematical formulation, solution approach with pseudocode for RL and heuristic methods, comparative analysis, and visualization description. Total length intended to fit within 15 thesis-style pages including references and AI statement.}
+
+\end{document}
